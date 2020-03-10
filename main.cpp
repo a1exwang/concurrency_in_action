@@ -4,11 +4,11 @@
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
-#include <memory>
 #include <mutex>
 #include <optional>
-#include <thread>
 #include <vector>
+
+#include "concurrent_queue.hpp"
 
 template <typename T>
 class Node {
@@ -18,9 +18,12 @@ class Node {
 };
 
 template <typename T>
-class Queue {
+requires IsConcurrentQueueElementType<T>
+class MutexQueue {
  public:
-  Queue() : head_(std::make_unique<Node<T>>()), tail_(head_.get()) {}
+  typedef T ElementType;
+  MutexQueue() : head_(std::unique_ptr<Node<T>, void(&)(Node<T>*)>(new Node<T>(), queue_node_deleter)),
+                 tail_(head_.get()) {}
   void push_back(T data) {
     std::unique_lock _(big_lock_);
     auto new_node = std::make_unique<Node<T>>();
@@ -30,6 +33,13 @@ class Queue {
     tail_->next_ = std::move(new_node);
     tail_ = tail_->next_.get();
   }
+
+  [[nodiscard]]
+  bool empty() const {
+    std::unique_lock _(big_lock_);
+    return head_.get() == tail_;
+  }
+
   std::optional<T> try_pop_front() {
     std::unique_lock _(big_lock_);
     if (head_.get() == tail_) {
@@ -48,110 +58,79 @@ class Queue {
   }
 
  private:
-  std::unique_ptr<Node<T>> head_;
+  static void queue_node_deleter(Node<T> *ptr) {
+    auto current = ptr;
+    while (current) {
+      auto next = current->next_.release();
+      delete current;
+      current = next;
+    }
+  }
+
+ private:
+  std::unique_ptr<Node<T>, void(&)(Node<T>*)> head_;
   Node<T> *tail_;
-  std::mutex big_lock_;
+  mutable std::mutex big_lock_;
 };
 
 struct Big {
-  Big(int id) : data_(1024, 0), id_(id) {}
+  explicit Big(int id) : data_(1024, 0), id_(id) {}
+  [[nodiscard]] int id() const {
+    return id_;
+  }
   std::vector<char> data_;
   int id_;
 };
 
-int main() {
-  Queue<Big> queue;
-  size_t producer_count = 1;
-  size_t consume_count = 1;
-  size_t total_work = 16 * 1024;
 
-  std::mutex lock;
-  std::condition_variable cv;
-  bool producer_start = false;
-  bool consume_start = false;
+struct ConsumerActionBusyWait {
+  template <typename QueueType>
+  requires BusyConcurrentQueue<QueueType>
+  size_t operator()(
+      QueueType &queue, size_t total_work, std::atomic<size_t> &global_work_done, bool verbose) const {
 
-  std::atomic<int64_t> remaining_work{static_cast<int64_t>(total_work)};
-  std::vector<std::thread> threads;
-  std::chrono::high_resolution_clock::time_point producer_start_time,
-      consumer_finish_time;
-  for (size_t i = 0; i < producer_count; i++) {
-    threads.emplace_back([&queue, &lock, &cv, i, &producer_start,
-                          &remaining_work, &producer_start_time]() {
-      {
-        std::unique_lock ul(lock);
-        while (!producer_start) {
-          cv.wait(ul);
-        }
-      }
-      std::cout << "producer " << i << " started" << std::endl;
-      producer_start_time = std::chrono::high_resolution_clock::now();
-
-      while (true) {
-        auto work_id =
-            remaining_work.fetch_sub(1, std::memory_order_relaxed) - 1;
-        if (work_id >= 0) {
-          // std::cout << "got work " << work_id << std::endl;
-          queue.push_back(Big(work_id));
-        } else {
+    size_t local_work_count = 0;
+    while (true) {
+      auto data = queue.try_pop_front();
+      if (!data.has_value()) {
+        if (global_work_done.load(std::memory_order_relaxed) >= total_work) {
           break;
+        } else {
+          continue;
         }
       }
-      std::cout << "producer " << i << " ended" << std::endl;
-    });
-  }
+      auto work_id_done = data.value().id();
+      auto total_work_done =
+          global_work_done.fetch_add(1, std::memory_order_relaxed) + 1;
 
-  std::atomic<size_t> counter{0};
-  for (size_t i = 0; i < consume_count; i++) {
-    threads.emplace_back([&counter, &queue, &lock, &cv, i, &consume_start,
-                          total_work, &consumer_finish_time]() {
-      {
-        std::unique_lock ul(lock);
-        while (!consume_start) {
-          cv.wait(ul);
-        }
+      // process_work(data.value())
+      local_work_count++;
+      if (verbose) {
+        std::cout << "work " << work_id_done << " done" << std::endl;
       }
-      std::cout << "consumer " << i << " started" << std::endl;
-      while (true) {
-        auto data = queue.try_pop_front();
-        if (data.has_value()) {
-          // process_work(data.value())
-          auto work_id_done = data.value().id_;
-          auto total_work_done =
-              counter.fetch_add(1, std::memory_order_relaxed) + 1;
-          if (total_work_done > total_work) {
-            break;
-          }
-          // std::cout << "work " << work_id_done << " done" << std::endl;
-          if (total_work_done == total_work) {
-            break;
-          }
-        }
+
+      if (total_work_done > total_work) {
+        break;
       }
-      std::cout << "consumer " << i << " ended" << std::endl;
-      consumer_finish_time = std::chrono::high_resolution_clock::now();
-    });
-  }
+      if (total_work_done == total_work) {
+        break;
+      }
+    }
 
-  std::cout << "notify all" << std::endl;
-  {
-    std::unique_lock _(lock);
-    producer_start = true;
+    return local_work_count;
   }
-  cv.notify_all();
-  {
-    std::unique_lock _(lock);
-    consume_start = true;
-  }
-  cv.notify_all();
-  for (auto &t : threads) {
-    t.join();
-  }
+};
 
-  std::cout << "total work: " << total_work << std::endl;
-  std::cout << "finished work: " << counter.load() << std::endl;
-  std::cout << "total time: "
-            << std::chrono::duration<double>(consumer_finish_time -
-                                             producer_start_time)
-                   .count()
-            << "s" << std::endl;
+
+int main(int argc, char **argv) {
+  if (argc < 5) {
+    std::cerr << "invalid argument" << std::endl;
+    return EXIT_FAILURE;
+  }
+  auto producer_count = std::stoul(argv[1]);
+  auto consumer_count = std::stoul(argv[2]);
+  auto total_work = std::stoul(argv[3]);
+  auto verbose = std::stoul(argv[4]);
+  profile_queue<MutexQueue<Big>, ConsumerActionBusyWait>(
+      producer_count, consumer_count, total_work, verbose);
 }
