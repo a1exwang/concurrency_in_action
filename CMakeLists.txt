@@ -1,8 +1,15 @@
 cmake_minimum_required(VERSION 3.8)
 project(cocurrent)
+
 set(CMAKE_CXX_STANDARD 20)
-if (CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+if (CMAKE_CXX_COMPILER_ID STREQUAL GNU AND
+        CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 9)
     add_compile_options(-fconcepts)
+else()
+    message(FATAL_ERROR "Only GCC >= 9.0 are supported because we use C++ 20 concepts")
 endif()
-add_executable(main main.cpp concurrent_queue.cpp)
-target_link_libraries(main pthread)
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+add_subdirectory(queue)

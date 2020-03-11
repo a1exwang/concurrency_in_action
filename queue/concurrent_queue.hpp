@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -40,6 +41,7 @@ concept BusyConcurrentQueue = requires(QueueType queue, const QueueType &queue_c
 template<typename QueueType>
 concept IdleConcurrentQueue = requires(QueueType queue, const QueueType &queue_const) {
   requires BasicConcurrentQueue<QueueType>;
+  { queue.all_done() };
   { queue.pop_front() } -> std::optional<typename QueueType::ElementType>;
 };
 
@@ -48,11 +50,12 @@ template <typename ConsumerActionType, typename QueueType>
 concept IsConsumerAction = requires(
     ConsumerActionType consumer_action,
     QueueType queue,
+    std::function<void(typename QueueType::ElementType &)> process_work,
     size_t consumer_id,
     size_t total_work,
     std::atomic<size_t> &global_work_done, bool verbose) {
   { ConsumerActionType() };
-  { consumer_action(queue, consumer_id, total_work, global_work_done, verbose) };
+  { consumer_action(queue, process_work, consumer_id, total_work, global_work_done, verbose) };
 };
 
 static std::string pretty_number(size_t n) {
@@ -144,11 +147,18 @@ void profile_queue(
 
   std::atomic<size_t> counter{0};
   std::vector<my_clock::time_point> local_finish_time(consumer_count);
+
+  std::vector<std::atomic<uint8_t>> work_mask(total_work);
+  auto process_work = [&work_mask, total_work](ElementType &element) {
+    work_mask[element.id()]++;
+  };
+
   for (size_t i = 0; i < consumer_count; i++) {
     threads.emplace_back([&counter, &queue, &lock, &cv, i, &consumer_start,
                              total_work, &consumer_finish_time,
                              &consumer_local_work_count, verbose, consumer_action,
-                             &local_finish_time]() {
+                             &local_finish_time,
+                             &process_work]() {
       {
         std::unique_lock ul(lock);
         while (!consumer_start) {
@@ -159,7 +169,7 @@ void profile_queue(
       if (verbose) {
         std::cout << "consumer " << i << " started" << std::endl;
       }
-      consumer_local_work_count[i] = consumer_action(queue, i, total_work, counter, verbose);
+      consumer_local_work_count[i] = consumer_action(queue, process_work, i, total_work, counter, verbose);
       if (verbose) {
         std::cout << "consumer " << i << " ended" << std::endl;
       }
@@ -190,7 +200,19 @@ void profile_queue(
   }
   consumer_finish_time = *std::max_element(local_finish_time.begin(), local_finish_time.end());
 
-  std::cout << "test case '" << name << "'" << std::endl;
+  bool passed = true;
+  for (size_t i = 0; i < work_mask.size(); i++) {
+    if (work_mask[i] != 1) {
+      std::cout << "Error: work " << i << " has been done " << work_mask[i] << " times" << std::endl;
+      passed = false;
+    }
+  }
+  if (!passed) {
+    std::cout << "test case '" << name << "' failed" << std::endl;
+    return;
+  }
+
+  std::cout << "test case '" << name << "' passed" << std::endl;
   std::cout << "total work: " << total_work << std::endl;
   std::cout << "total producers: " << producer_count << ", each: ";
   for (size_t i = 0; i < producer_count; i++) {

@@ -4,6 +4,7 @@
 #include "mutex_queue_with_big_lock.hpp"
 #include "mutex_queue_with_2_locks.hpp"
 #include "consumer_action_busy_wait.hpp"
+#include "consumer_action_idle_wait.hpp"
 
 struct Big {
   explicit Big(int id) : data_(1024, 0), id_(id) {}
@@ -25,9 +26,16 @@ int main(int argc, char **argv) {
   auto total_work = std::stoul(argv[3]);
   auto verbose = std::stoul(argv[4]);
   profile_queue<MutexQueueWithBigLock<Big>, ConsumerActionBusyWait>(
-      "MutexQueueWithBigLock",
+      "MutexQueueWithBigLock, BusyWait",
       producer_count, consumer_count, total_work, verbose);
   profile_queue<MutexQueueWith2Locks<Big>, ConsumerActionBusyWait>(
-      "MutexQueueWith2Locks",
+      "MutexQueueWith2Locks, BusyWait",
+      producer_count, consumer_count, total_work, verbose);
+
+  profile_queue<MutexQueueWithBigLock<Big>, ConsumerActionIdleWait>(
+      "MutexQueueWithBigLock, IdleWait",
+      producer_count, consumer_count, total_work, verbose);
+  profile_queue<MutexQueueWith2Locks<Big>, ConsumerActionIdleWait>(
+      "MutexQueueWith2Locks, IdleWait",
       producer_count, consumer_count, total_work, verbose);
 }
