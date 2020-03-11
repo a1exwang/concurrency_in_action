@@ -46,10 +46,13 @@ concept IdleConcurrentQueue = requires(QueueType queue, const QueueType &queue_c
 
 template <typename ConsumerActionType, typename QueueType>
 concept IsConsumerAction = requires(
-    ConsumerActionType consumer_action, QueueType queue,
-    size_t total_work, std::atomic<size_t> &global_work_done, bool verbose) {
+    ConsumerActionType consumer_action,
+    QueueType queue,
+    size_t consumer_id,
+    size_t total_work,
+    std::atomic<size_t> &global_work_done, bool verbose) {
   { ConsumerActionType() };
-  { consumer_action(queue, total_work, global_work_done, verbose) };
+  { consumer_action(queue, consumer_id, total_work, global_work_done, verbose) };
 };
 
 static std::string pretty_number(size_t n) {
@@ -77,14 +80,20 @@ static std::string pretty_number(size_t n) {
   }
 }
 
+using my_clock = std::chrono::steady_clock;
+
 template <typename QueueType, typename ConsumerAction,
           typename ElementType = typename QueueType::ElementType>
 requires BasicConcurrentQueue<QueueType> &&
     IsConcurrentQueueElementType<ElementType> &&
     IsConsumerAction<ConsumerAction, QueueType>
 void profile_queue(
-    size_t producer_count, size_t consumer_count, size_t total_work,
+    const std::string &name,
+    size_t producer_count,
+    size_t consumer_count,
+    size_t total_work,
     bool verbose) {
+
   QueueType queue;
   std::mutex lock;
   std::condition_variable cv;
@@ -94,14 +103,14 @@ void profile_queue(
 
   std::atomic<int64_t> remaining_work{static_cast<int64_t>(total_work)};
   std::vector<std::thread> threads;
-  std::chrono::high_resolution_clock::time_point producer_start_time,
+  my_clock::time_point producer_start_time,
       consumer_finish_time;
   std::vector<size_t> producer_local_work_count(producer_count),
       consumer_local_work_count(consumer_count);
   for (size_t i = 0; i < producer_count; i++) {
     threads.emplace_back([&queue, &lock, &cv, i, &producer_start,
                              &remaining_work, &producer_start_time,
-                             &producer_local_work_count, verbose]() {
+                             &producer_local_work_count, verbose, producer_id = i]() {
       {
         std::unique_lock ul(lock);
         while (!producer_start) {
@@ -112,14 +121,13 @@ void profile_queue(
       if (verbose) {
         std::cout << "producer " << i << " started" << std::endl;
       }
-      producer_start_time = std::chrono::high_resolution_clock::now();
 
       while (true) {
         auto work_id =
             remaining_work.fetch_sub(1, std::memory_order_relaxed) - 1;
         if (work_id >= 0) {
           if (verbose) {
-            std::cout << "got work " << work_id << std::endl;
+            std::cout << "producer " << producer_id << " got work " << work_id << std::endl;
           }
           queue.push_back(ElementType(work_id));
           local_work_count++;
@@ -135,46 +143,54 @@ void profile_queue(
   }
 
   std::atomic<size_t> counter{0};
+  std::vector<my_clock::time_point> local_finish_time(consumer_count);
   for (size_t i = 0; i < consumer_count; i++) {
     threads.emplace_back([&counter, &queue, &lock, &cv, i, &consumer_start,
                              total_work, &consumer_finish_time,
-                             &consumer_local_work_count, verbose, consumer_action]() {
-      size_t local_work_count = 0;
+                             &consumer_local_work_count, verbose, consumer_action,
+                             &local_finish_time]() {
       {
         std::unique_lock ul(lock);
         while (!consumer_start) {
           cv.wait(ul);
         }
       }
+
       if (verbose) {
         std::cout << "consumer " << i << " started" << std::endl;
       }
-      consumer_action(queue, total_work, counter, verbose);
+      consumer_local_work_count[i] = consumer_action(queue, i, total_work, counter, verbose);
       if (verbose) {
         std::cout << "consumer " << i << " ended" << std::endl;
       }
-      consumer_finish_time = std::chrono::high_resolution_clock::now();
-      consumer_local_work_count[i] = local_work_count;
+
+      local_finish_time[i] = my_clock::now();
     });
   }
 
   if (verbose) {
     std::cout << "notify all" << std::endl;
   }
-  {
-    std::unique_lock _(lock);
-    producer_start = true;
-  }
-  cv.notify_all();
+
+  producer_start_time = my_clock::now();
   {
     std::unique_lock _(lock);
     consumer_start = true;
   }
   cv.notify_all();
+
+  {
+    std::unique_lock _(lock);
+    producer_start = true;
+  }
+  cv.notify_all();
+
   for (auto &t : threads) {
     t.join();
   }
+  consumer_finish_time = *std::max_element(local_finish_time.begin(), local_finish_time.end());
 
+  std::cout << "test case '" << name << "'" << std::endl;
   std::cout << "total work: " << total_work << std::endl;
   std::cout << "total producers: " << producer_count << ", each: ";
   for (size_t i = 0; i < producer_count; i++) {
@@ -187,9 +203,10 @@ void profile_queue(
   }
   std::cout << std::endl;
   std::cout << "finished work: " << counter.load() << std::endl;
-  auto total_time = std::chrono::duration<double>(consumer_finish_time - producer_start_time).count();
+  auto total_time = std::chrono::duration<double>(consumer_finish_time-producer_start_time).count();
   std::cout << "total time: "
             << total_time
             << "s" << std::endl;
   std::cout << "total throughput " << pretty_number(counter.load() / total_time) << "/s" << std::endl;
+  std::cout << std::endl;
 }
