@@ -18,7 +18,7 @@ class MutexQueueWith2Locks {
       tail_ = tail_->next_.get();
     }
 
-    cv_.notify_one();
+    cv_all_done_.notify_one();
   }
 
   [[nodiscard]]
@@ -57,9 +57,10 @@ class MutexQueueWith2Locks {
     {
       std::unique_lock lock(head_lock_);
       while (empty_unsafe() && !all_done_) {
-        cv_.wait(lock);
+        cv_all_done_.wait(lock);
       }
       if (all_done_) {
+        std::cout << "pop_front all done" << std::endl;
         return {};
       }
       assert(head_);
@@ -80,7 +81,8 @@ class MutexQueueWith2Locks {
 
   void all_done() {
     all_done_ = true;
-    cv_.notify_all();
+    std::cout << "all done notify all" << std::endl;
+    cv_all_done_.notify_all();
   }
 
  private:
@@ -94,8 +96,8 @@ class MutexQueueWith2Locks {
   /* Always lock in the order of: head, tail, to prevent deadlock */
   mutable std::mutex head_lock_;
   mutable std::mutex tail_lock_;
-//  mutable std::mutex all_done_lock_;
-  std::atomic<bool> all_done_;
-  mutable std::condition_variable cv_;
+
+  std::atomic<bool> all_done_ = false;
+  mutable std::condition_variable cv_all_done_;
 };
 

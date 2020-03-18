@@ -25,7 +25,7 @@ class MutexQueueWithBigLock {
       tail_->next_ = std::move(new_node);
       tail_ = tail_->next_.get();
     }
-    cv_.notify_one();
+    cv_all_done_.notify_one();
   }
 
   [[nodiscard]]
@@ -54,7 +54,7 @@ class MutexQueueWithBigLock {
   std::optional<T> pop_front() {
     std::unique_lock lock(big_lock_);
     while (empty_unsafe() && !all_done_) {
-      cv_.wait(lock);
+      cv_all_done_.wait(lock);
     }
     if (all_done_) {
       return {};
@@ -73,7 +73,7 @@ class MutexQueueWithBigLock {
 
   void all_done() {
     all_done_ = true;
-    cv_.notify_all();
+    cv_all_done_.notify_all();
   }
 
  private:
@@ -85,6 +85,7 @@ class MutexQueueWithBigLock {
   NodePtr<T> head_;
   Node<T> *tail_;
   mutable std::mutex big_lock_;
-  mutable std::condition_variable cv_;
+
   std::atomic<bool> all_done_ = false;
+  mutable std::condition_variable cv_all_done_;
 };

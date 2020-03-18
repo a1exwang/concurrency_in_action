@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(cocurrent)
+project(concurrent)
 
 set(CMAKE_CXX_STANDARD 20)
 if (CMAKE_CXX_COMPILER_ID STREQUAL GNU AND

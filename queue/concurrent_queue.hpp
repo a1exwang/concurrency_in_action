@@ -98,8 +98,8 @@ void profile_queue(
     bool verbose) {
 
   QueueType queue;
-  std::mutex lock;
-  std::condition_variable cv;
+  std::mutex start_cv_lock;
+  std::condition_variable start_cv;
   bool producer_start = false;
   bool consumer_start = false;
   ConsumerAction consumer_action;
@@ -111,13 +111,13 @@ void profile_queue(
   std::vector<size_t> producer_local_work_count(producer_count),
       consumer_local_work_count(consumer_count);
   for (size_t i = 0; i < producer_count; i++) {
-    threads.emplace_back([&queue, &lock, &cv, i, &producer_start,
+    threads.emplace_back([&queue, &start_cv_lock, &start_cv, i, &producer_start,
                              &remaining_work, &producer_start_time,
                              &producer_local_work_count, verbose, producer_id = i]() {
       {
-        std::unique_lock ul(lock);
+        std::unique_lock ul(start_cv_lock);
         while (!producer_start) {
-          cv.wait(ul);
+          start_cv.wait(ul);
         }
       }
       size_t local_work_count = 0;
@@ -149,20 +149,20 @@ void profile_queue(
   std::vector<my_clock::time_point> local_finish_time(consumer_count);
 
   std::vector<std::atomic<uint8_t>> work_mask(total_work);
-  auto process_work = [&work_mask, total_work](ElementType &element) {
+  auto process_work = [&work_mask](ElementType &element) {
     work_mask[element.id()]++;
   };
 
   for (size_t i = 0; i < consumer_count; i++) {
-    threads.emplace_back([&counter, &queue, &lock, &cv, i, &consumer_start,
+    threads.emplace_back([&counter, &queue, &start_cv_lock, &start_cv, i, &consumer_start,
                              total_work, &consumer_finish_time,
                              &consumer_local_work_count, verbose, consumer_action,
                              &local_finish_time,
                              &process_work]() {
       {
-        std::unique_lock ul(lock);
+        std::unique_lock ul(start_cv_lock);
         while (!consumer_start) {
-          cv.wait(ul);
+          start_cv.wait(ul);
         }
       }
 
@@ -184,16 +184,16 @@ void profile_queue(
 
   producer_start_time = my_clock::now();
   {
-    std::unique_lock _(lock);
+    std::unique_lock _(start_cv_lock);
     consumer_start = true;
   }
-  cv.notify_all();
+  start_cv.notify_all();
 
   {
-    std::unique_lock _(lock);
+    std::unique_lock _(start_cv_lock);
     producer_start = true;
   }
-  cv.notify_all();
+  start_cv.notify_all();
 
   for (auto &t : threads) {
     t.join();
@@ -203,7 +203,7 @@ void profile_queue(
   bool passed = true;
   for (size_t i = 0; i < work_mask.size(); i++) {
     if (work_mask[i] != 1) {
-      std::cout << "Error: work " << i << " has been done " << work_mask[i] << " times" << std::endl;
+      std::cout << "Error: work " << i << " has been done " << (int)work_mask[i] << " times" << std::endl;
       passed = false;
     }
   }
