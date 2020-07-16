@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include <atomic>
+#include <concepts>
 #include <condition_variable>
 #include <functional>
 #include <iomanip>
@@ -17,32 +18,32 @@
 template <typename ElementType>
 concept IsConcurrentQueueElementType = requires(ElementType element, size_t id) {
   { ElementType(id) };
-  { element.id() } -> size_t;
+  { element.id() } -> std::convertible_to<size_t>;
 };
 
 template <typename QueueType, typename ElementType>
 concept CanPushBackElement = requires(QueueType queue, ElementType element) {
-  { queue.push_back(element) } -> void;
+  { queue.push_back(element) } -> std::same_as<void>;
 };
 
 template<typename QueueType>
 concept BasicConcurrentQueue = requires(QueueType queue, const QueueType &queue_const) {
   typename QueueType::ElementType;
   requires CanPushBackElement<QueueType, typename QueueType::ElementType>;
-  { queue_const.empty() } -> bool;
+  { queue_const.empty() } -> std::convertible_to<bool>;
 };
 
 template<typename QueueType>
 concept BusyConcurrentQueue = requires(QueueType queue, const QueueType &queue_const) {
   requires BasicConcurrentQueue<QueueType>;
-  { queue.try_pop_front() } -> std::optional<typename QueueType::ElementType>;
+  { queue.try_pop_front() } -> std::same_as<std::optional<typename QueueType::ElementType>>;
 };
 
 template<typename QueueType>
 concept IdleConcurrentQueue = requires(QueueType queue, const QueueType &queue_const) {
   requires BasicConcurrentQueue<QueueType>;
   { queue.all_done() };
-  { queue.pop_front() } -> std::optional<typename QueueType::ElementType>;
+  { queue.pop_front() } -> std::same_as<std::optional<typename QueueType::ElementType>>;
 };
 
 
